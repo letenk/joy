@@ -59,3 +59,50 @@ class ToolsTest(unittest.TestCase):
             with self.assertRaises(InterruptedError):
                 run('write', path='cancelled', content='no')
             self.assertFalse((root / 'cancelled').exists())
+
+    def test_file_changes_are_reported(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            changes = []
+            tools = create_tools(root, Event(), changes.append)
+
+            def run(name, **arguments):
+                return tools.execute({'function': {'name': name, 'arguments': json.dumps(arguments)}})[0]
+
+            run('write', path='src/demo.py', content='a = 1\nb = 2\n')
+            run('write', path='./src/../src/demo.py', content='a = 1\nb = 3\n')
+            run('write', path='src/demo.py', content='a = 1\nb = 3\n')  # unchanged: no report
+            run('edit', path='src/demo.py', old_text='a = 1', new_text='a = 10')
+            created, overwritten, edited = changes
+            self.assertEqual([change.path for change in changes], ['src/demo.py'] * 3)
+            self.assertEqual((created.created, created.added, created.removed), (True, 2, 0))
+            self.assertEqual((overwritten.created, overwritten.added, overwritten.removed), (False, 1, 1))
+            self.assertEqual([(row.kind, row.old, row.new, row.text) for row in edited.rows
+                              if row.kind != 'ctx'], [('del', 1, None, 'a = 1'), ('add', None, 1, 'a = 10')])
+
+    def test_binary_overwrite_is_saved_without_a_diff(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / 'binary.bin').write_bytes(b'\xff\xfe\x00')
+            changes = []
+            tools = create_tools(root, Event(), changes.append)
+            result = tools.execute({'function': {'name': 'write', 'arguments': json.dumps(
+                {'path': 'binary.bin', 'content': 'text now\n'})}})[0]
+            self.assertEqual(result, 'Wrote binary.bin.')
+            self.assertEqual((root / 'binary.bin').read_text(), 'text now\n')
+            self.assertEqual(changes, [])
+
+    def test_failing_preview_does_not_fail_the_tool(self):
+        def broken(change):
+            raise RuntimeError('preview failed')
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            tools = create_tools(root, Event(), broken)
+
+            def run(name, **arguments):
+                return tools.execute({'function': {'name': name, 'arguments': json.dumps(arguments)}})[0]
+
+            self.assertEqual(run('write', path='x.txt', content='a\n'), 'Wrote x.txt.')
+            self.assertIn('Edited x.txt', run('edit', path='x.txt', old_text='a', new_text='b'))
+            self.assertEqual((root / 'x.txt').read_text(), 'b\n')

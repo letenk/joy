@@ -11,6 +11,7 @@ from unittest.mock import patch
 import httpx
 from openai import OpenAI
 
+from joy.diff import FileDiff
 from joy.llm import MODEL, ToolEvent, stream_reply
 
 
@@ -73,7 +74,11 @@ class LlmTest(unittest.IsolatedAsyncioTestCase):
         with tempfile.TemporaryDirectory() as directory:
             with patch('joy.llm.Path.cwd', return_value=Path(directory)), self.client_patch(respond):
                 chunks = [chunk async for chunk in stream_reply([{'role': 'user', 'content': 'Create it'}])]
-            self.assertEqual(chunks, [ToolEvent('write', 'running'), ToolEvent('write', 'finished'), 'Created it.'])
+            self.assertEqual([chunk for chunk in chunks if not isinstance(chunk, FileDiff)],
+                             [ToolEvent('write', 'running'), ToolEvent('write', 'finished'), 'Created it.'])
+            # The diff arrives while the tool runs, before it is reported finished.
+            self.assertIsInstance(chunks[1], FileDiff)
+            self.assertEqual((chunks[1].path, chunks[1].created, chunks[1].added), ('hello.txt', True, 1))
             self.assertEqual((Path(directory) / 'hello.txt').read_text(), 'hello')
         self.assertEqual(len(payloads), 2)
 

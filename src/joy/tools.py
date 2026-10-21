@@ -6,12 +6,15 @@ import subprocess
 import tempfile
 import time
 import unicodedata
+from collections.abc import Callable
 from contextlib import suppress
 from difflib import unified_diff
 from pathlib import Path
 from threading import Event, Lock
 
 from aisuite.utils.tools import Tools
+
+from joy.diff import FileDiff, build_diff
 
 OUTPUT_LIMIT = 20_000
 FILE_LIMIT = 2_000_000
@@ -88,8 +91,25 @@ def _save(path: Path, content: str) -> None:
             temporary.unlink(missing_ok=True)
 
 
-def create_tools(workspace: Path, cancelled: Event) -> Tools:
+def _current(target: Path) -> str | None:
+    """Existing text for a diff, or None if the file is absent. Raises if unreadable."""
+    if not target.exists():
+        return None
+    if target.stat().st_size > FILE_LIMIT:
+        raise ValueError("File exceeds the 2 MB limit.")
+    return target.read_bytes().decode("utf-8")
+
+
+def create_tools(workspace: Path, cancelled: Event,
+                 on_change: Callable[[FileDiff], None] | None = None) -> Tools:
     root = workspace.resolve()
+
+    def report(target: Path, before: str | None, after: str) -> None:
+        # The file is already saved, so a failed preview must not fail the tool call.
+        if on_change is not None:
+            with suppress(Exception):
+                if diff := build_diff(target.relative_to(root).as_posix(), before, after):
+                    on_change(diff)
 
     def resolve(path: str) -> Path:
         target = (root / path).resolve()
@@ -115,7 +135,14 @@ def create_tools(workspace: Path, cancelled: Event) -> Tools:
     def write(path: str, content: str) -> str:
         """Create or overwrite a UTF-8 file, creating parent directories if needed."""
         with MUTATION_LOCK:
-            _save(resolve(path), content)
+            target = resolve(path)
+            try:
+                before, diffable = _current(target), True
+            except (OSError, ValueError):  # Binary or oversized files are overwritten without a diff.
+                before, diffable = None, False
+            _save(target, content)
+        if diffable:
+            report(target, before, content)
         return f"Wrote {path}."
 
     def edit(path: str, old_text: str, new_text: str) -> str:
@@ -134,6 +161,7 @@ def create_tools(workspace: Path, cancelled: Event) -> Tools:
             if target.read_bytes().decode("utf-8") != original:
                 raise ValueError("File changed during editing. Read it and retry.")
             _save(target, updated)
+        report(target, original, updated)
         diff = "".join(unified_diff(original.splitlines(keepends=True),
                                     updated.splitlines(keepends=True),
                                     fromfile=path, tofile=path))

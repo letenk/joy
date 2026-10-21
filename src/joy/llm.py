@@ -12,6 +12,7 @@ from threading import Event, Thread
 
 from openai import OpenAI, APIConnectionError, APIStatusError, APITimeoutError
 
+from joy.diff import FileDiff
 from joy.tools import create_tools
 
 MODEL = "openai:gpt-5.6-luna"
@@ -58,8 +59,8 @@ def _error_message(error: Exception) -> str:
     return f"Local error: {type(error).__name__}. Check the installed dependencies and configuration."
 
 
-async def stream_reply(messages: list[dict]) -> AsyncIterator[str | ToolEvent]:
-    result: Queue[str | ToolEvent | Exception | None] = Queue()
+async def stream_reply(messages: list[dict]) -> AsyncIterator[str | ToolEvent | FileDiff]:
+    result: Queue[str | ToolEvent | FileDiff | Exception | None] = Queue()
     cancelled = Event()
     workspace = Path.cwd()
 
@@ -67,7 +68,7 @@ async def stream_reply(messages: list[dict]) -> AsyncIterator[str | ToolEvent]:
         client = None
         try:
             client = OpenAI(timeout=60.0, max_retries=0)
-            toolbox = create_tools(workspace, cancelled)
+            toolbox = create_tools(workspace, cancelled, result.put)
             conversation = list(messages)
             for _ in range(16):
                 if cancelled.is_set():

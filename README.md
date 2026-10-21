@@ -6,7 +6,8 @@ Uses the Responses API with medium reasoning, preserving reasoning between tool 
 The OpenAI SDK handles requests; aisuite defines and executes the four tools.
 
 Includes four tools: **read** files, **write** files, **edit** text, and **bash**
-to run commands and tests. Tool activity appears while replies stream.
+to run commands and tests. Tool activity appears while replies stream, and files Joy
+writes or edits are shown afterward as line-numbered diffs.
 
 ## Run
 

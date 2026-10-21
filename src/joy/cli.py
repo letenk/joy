@@ -19,6 +19,7 @@ from rich.markdown import Markdown
 from rich.padding import Padding
 from rich.text import Text
 
+from joy.diff import FileDiff, render_diff
 from joy.llm import MODEL, ToolEvent, stream_reply
 
 
@@ -40,6 +41,8 @@ def main() -> None:
         "and failures honestly. Do not expose credentials or modify unrelated files.",
     }]
     answer = ""
+    # The reply in order: text runs and file diffs, printed once the reply ends.
+    segments: list[str | FileDiff] = []
     bindings = KeyBindings()
     waiting = False
     draft = ""
@@ -103,6 +106,13 @@ def main() -> None:
         Frame(session.layout.container),
     ])
 
+    def show_reply() -> None:
+        for segment in segments:
+            if isinstance(segment, FileDiff):
+                console.print(Padding(render_diff(segment), (0, 0, 1, 1)))
+            elif segment.strip():
+                console.print(Padding(Markdown(segment), (0, 0, 0, 1)))
+
     async def finish_wait(messages: list[dict[str, str]]) -> None:
         nonlocal answer, tool_status, used_tools
         try:
@@ -111,8 +121,14 @@ def main() -> None:
                     if isinstance(chunk, ToolEvent):
                         used_tools = True
                         tool_status = f"{chunk.name} — {chunk.status}"
+                    elif isinstance(chunk, FileDiff):
+                        segments.append(chunk)
                     else:
                         answer += chunk
+                        if segments and isinstance(segments[-1], str):
+                            segments[-1] += chunk
+                        else:
+                            segments.append(chunk)
                     session.app.invalidate()
         except Exception as error:
             session.app.exit(exception=error)
@@ -143,6 +159,7 @@ def main() -> None:
             console.print()
             waiting = True
             answer = ""
+            segments.clear()
             tool_status = ""
             used_tools = False
             messages = [*history, {"role": "user", "content": message}]
@@ -154,21 +171,18 @@ def main() -> None:
                 )
             except KeyboardInterrupt:
                 draft = session.default_buffer.text
-                if answer:
-                    console.print(Padding(Markdown(answer), (0, 0, 0, 1)))
+                show_reply()
                 console.print("[dim]Response cancelled.[/dim]\n")
                 if used_tools:
                     history = [*messages, {"role": "assistant", "content": answer +
                         "\nCancelled during tool use. Changes may already exist; inspect before retrying."}]
                 continue
             except EOFError:
-                if answer:
-                    console.print(Padding(Markdown(answer), (0, 0, 0, 1)))
+                show_reply()
                 break
             except Exception as error:
                 draft = session.default_buffer.text
-                if answer:
-                    console.print(Padding(Markdown(answer), (0, 0, 0, 1)))
+                show_reply()
                 console.print(Text(str(error), style="red"))
                 if used_tools:
                     history = [*messages, {"role": "assistant", "content": answer +
@@ -177,5 +191,5 @@ def main() -> None:
             finally:
                 waiting = False
             history = [*messages, {"role": "assistant", "content": answer}]
-            console.print(Padding(Markdown(answer), (0, 0, 0, 1)))
+            show_reply()
             console.print()

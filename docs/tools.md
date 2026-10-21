@@ -152,3 +152,36 @@ Bash is not restricted by the file tools' workspace checks. It can access or mod
 anything your user permissions allow. Output limits cap what Joy returns, not how
 much the command can write to its temporary output file before it stops. Process-group
 cleanup uses POSIX APIs, so this implementation targets macOS and Linux.
+
+## File changes in the terminal
+
+When `write` or `edit` saves a file, Joy shows what changed: the file, the lines, and
+the code. The diff is built after the save and is separate from the tool result the
+model receives, so it adds no tokens to the conversation. It appears where it happened
+in the reply, between the text before and after the tool call, once the reply finishes.
+
+```text
+● Edited src/hello.py  +2 -1
+1 1   import sys
+2 2
+3 3   def main():
+4   -     print("Hello")
+  4 +     name = "World"
+  5 +     print(f"Hello, {name}")
+5 6
+6 7   main()
+```
+
+- **Two line-number columns.** The left column is the line before the change and the
+  right column is the line after. Deleted lines have only an old number, added lines
+  only a new one, and unchanged context lines have both, so numbers stay unambiguous
+  after lines shift. New files have only the new column.
+- **Colors and marks.** Added lines are green with `+`, deleted lines are red with `-`,
+  and three lines of context on each side are dimmed. `⋯` separates distant changes.
+- **Long diffs are cut at 60 rows** with a `… N more lines` footer. The `+`/`-` totals
+  in the header count every changed line, including the hidden ones.
+- **Code is shown as text.** Brackets are not interpreted as styling, and control and
+  escape characters from file content or paths appear as visible symbols such as `␛`.
+- **Not every write has a diff.** Overwriting a binary or over-2 MB file saves normally
+  but shows nothing. A write with identical content shows nothing. Changes made through
+  `bash` are not tracked.

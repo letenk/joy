@@ -14,6 +14,7 @@ from prompt_toolkit.output import DummyOutput
 from prompt_toolkit.application import create_app_session, get_app
 
 from joy.cli import main
+from joy.diff import build_diff
 
 
 class CliTest(unittest.TestCase):
@@ -121,6 +122,57 @@ class CliTest(unittest.TestCase):
         ])
         self.assertEqual(requests[-1][1]["content"], "[bold]literal[/bold]")
         self.assertEqual(requests[-1][-1]["content"], "draft for later")
+
+    def run_session(self, inputs, fake_reply):
+        output = StringIO()
+        original_prompt = PromptSession.prompt
+        inputs = iter(inputs)
+        with create_pipe_input() as pipe:
+            def prompt(session, *args, **kwargs):
+                start = kwargs.get("pre_run")
+
+                def feed():
+                    if start:
+                        start()
+                    pipe.send_text(next(inputs))
+
+                kwargs["pre_run"] = feed
+                return original_prompt(session, *args, **kwargs)
+
+            with create_app_session(input=pipe, output=DummyOutput()), redirect_stdout(output), \
+                    patch("joy.cli.stream_reply", side_effect=fake_reply), \
+                    patch.object(PromptSession, "prompt", prompt), \
+                    patch.dict(os.environ, {"OPENAI_API_KEY": "test-key"}):
+                main()
+        return output.getvalue()
+
+    def test_file_diffs_print_between_the_text_around_them(self):
+        diff = build_diff("src/app.py", "x = 1\ny = 2\n", "x = 1\ny = 3\n")
+
+        async def fake_reply(messages):
+            yield "Updating the file."
+            yield diff
+            yield "\n\nDone."
+
+        transcript = self.run_session(["change y\r", "", "/exit\r"], fake_reply)
+        positions = [transcript.index(text) for text in (
+            "Updating the file.", "Edited src/app.py  +1 -1", "- y = 2", "+ y = 3", "Done.")]
+        self.assertEqual(positions, sorted(positions))
+        self.assertRegex(transcript, r"2\s+- y = 2")
+        self.assertRegex(transcript, r"2 \+ y = 3")
+        self.assertEqual(transcript.count("Edited src/app.py"), 1)
+
+    def test_file_diffs_survive_a_failed_reply(self):
+        diff = build_diff("new.py", None, "print('hi')\n")
+
+        async def fake_reply(messages):
+            yield diff
+            raise RuntimeError("Stream broke.")
+
+        transcript = self.run_session(["make it\r", "", "/exit\r"], fake_reply)
+        self.assertIn("Created new.py  +1", transcript)
+        self.assertIn("Stream broke.", transcript)
+        self.assertLess(transcript.index("Created new.py"), transcript.index("Stream broke."))
 
     def test_missing_key(self):
         output = StringIO()
